@@ -135,12 +135,14 @@ def search(
     if not allowed_kb_ids:
         return []
     client = client or get_client()
-    return client.search(
+    # query_points is the current API (the older .search() was removed).
+    resp = client.query_points(
         collection_name=settings.collection_name,
-        query_vector=vector,
+        query=vector,
         query_filter=qm.Filter(
             must=[qm.FieldCondition(key="kb_id", match=qm.MatchAny(any=allowed_kb_ids))]
         ),
         limit=top_k,
         with_payload=True,
     )
+    return resp.points

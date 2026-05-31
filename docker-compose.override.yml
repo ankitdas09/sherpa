@@ -1,0 +1,22 @@
+# Local dev override (auto-loaded by `docker compose`).
+#
+# Replaces the amd64-only TEI image with an arm64-native sidecar that serves the
+# SAME model behind the SAME /embed + /health contract. Remove this file (or run
+# `docker compose -f docker-compose.yml ...`) to use real TEI in production.
+services:
+  tei:
+    image: !reset null
+    platform: !reset null
+    command: !reset null
+    build:
+      context: .
+      dockerfile: docker/embed.Dockerfile
+    volumes:
+      - hf-cache:/data
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:80/health').status==200 else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    ports:
+      - "8080:80"

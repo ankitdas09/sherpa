@@ -19,10 +19,10 @@ def object_key(doc_id: str) -> str:
     return f"uploads/{doc_id}.pdf"
 
 
-def _client():
+def _client(endpoint: str | None = None):
     return boto3.client(
         "s3",
-        endpoint_url=settings.minio_endpoint,
+        endpoint_url=endpoint or settings.minio_endpoint,
         aws_access_key_id=settings.minio_access_key,
         aws_secret_access_key=settings.minio_secret_key,
         region_name=settings.minio_region,
@@ -33,10 +33,12 @@ def _client():
 def presigned_put_url(key: str, content_type: str) -> str:
     """A scoped, temporary URL the browser PUTs one specific object to.
 
-    Content-type is pinned into the signature; the frontend must send the same
+    Signed against the *public* endpoint so the host/browser can reach it (the
+    internal `minio:9000` hostname is unreachable from outside the docker network).
+    Content-type is pinned into the signature; the client must send the same
     Content-Type header on the PUT.
     """
-    return _client().generate_presigned_url(
+    return _client(settings.minio_public_endpoint).generate_presigned_url(
         ClientMethod="put_object",
         Params={
             "Bucket": settings.minio_bucket,

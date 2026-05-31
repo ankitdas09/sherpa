@@ -45,7 +45,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Sherpa — PDF semantic search",
+    title="sherpa",
     version="0.1.0",
     summary="Self-hosted, retrieval-only semantic search over private PDFs.",
     lifespan=lifespan,

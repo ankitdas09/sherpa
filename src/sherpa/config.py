@@ -36,7 +36,17 @@ class Settings(BaseSettings):
     embed_timeout_s: float = Field(default=60.0)
 
     # --- MinIO (raw PDF bytes) ---
-    minio_endpoint: str = Field(default="http://minio:9000")
+    minio_endpoint: str = Field(
+        default="http://minio:9000",
+        description="Internal endpoint the API/worker use to read/write objects.",
+    )
+    minio_public_endpoint: str = Field(
+        default="http://localhost:9000",
+        description=(
+            "Host-reachable endpoint baked into presigned URLs. The browser uploads "
+            "here, so it must resolve from outside the docker network."
+        ),
+    )
     minio_access_key: str = Field(default="minioadmin")
     minio_secret_key: str = Field(default="minioadmin")
     minio_bucket: str = Field(default="uploads")

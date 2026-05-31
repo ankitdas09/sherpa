@@ -26,6 +26,7 @@ DOC_STATUS = postgresql.ENUM(
     "failed",
     "abandoned",
     name="doc_status",
+    create_type=False,
 )
 
 
