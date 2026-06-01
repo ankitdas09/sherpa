@@ -1,137 +1,283 @@
-# Sherpa — Self-Hosted PDF Semantic Search
+<div align="center">
 
-Retrieval-only semantic search over private PDFs. A user asks a question and gets
-back the most relevant **passages** (file + page + snippet + score) — no LLM, no
-generation, **nothing leaves our infrastructure**.
+# Sherpa
 
-This repo is the full **scalable-by-default skeleton**: every service from the
-architecture is wired and the upload → ingest → search path works end-to-end.
+### Self-hosted semantic search over private PDFs
+
+Ask a question in plain language, get back the most relevant **passages** — each with its
+source file, page, snippet, and relevance score. No LLM, no hallucinations, and
+**nothing ever leaves your infrastructure**.
+
+<p>
+  <img alt="Python" src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white">
+  <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-stateless-009688?logo=fastapi&logoColor=white">
+  <img alt="Qdrant" src="https://img.shields.io/badge/Qdrant-vector%20search-DC244C">
+  <img alt="PostgreSQL" src="https://img.shields.io/badge/PostgreSQL-system%20of%20record-4169E1?logo=postgresql&logoColor=white">
+  <img alt="Docker" src="https://img.shields.io/badge/Docker-compose-2496ED?logo=docker&logoColor=white">
+  <img alt="License" src="https://img.shields.io/badge/License-MIT-green">
+  <img alt="Privacy" src="https://img.shields.io/badge/data-100%25%20self--hosted-success">
+</p>
+
+</div>
+
+---
+
+## Why Sherpa
+
+Most "chat with your docs" tools send your documents to a third-party API and answer with
+a language model that can make things up. Sherpa does neither.
+
+- **Fully private.** Embeddings run on your own hardware. No document content is ever sent to an external service.
+- **Retrieval, not generation.** It returns the documents' *actual* passages — cheaper, faster, and free of hallucination risk. A "summarize the results" layer can be added later without touching the core.
+- **Semantic, not keyword.** Matches on meaning, so a query finds the right passage even when the wording differs.
+- **Scalable by default.** Decoupled services (API · embedding · workers · stores) that each scale independently — built for thousands of PDFs, not retrofitted.
+
+> This repository is the complete, runnable **skeleton**: every service is wired, the full
+> upload → ingest → search path works end-to-end, and it ships with a developer visualizer
+> for seeing the flow.
+
+## Table of contents
+
+- [Features](#features)
+- [Architecture](#architecture)
+- [Tech stack](#tech-stack)
+- [Quick start](#quick-start)
+- [Developer flow visualizer](#developer-flow-visualizer)
+- [API reference](#api-reference)
+- [How it works](#how-it-works)
+- [Data model](#data-model)
+- [Project structure](#project-structure)
+- [Configuration](#configuration)
+- [Testing & verification](#testing--verification)
+- [Design decisions](#design-decisions)
+- [License](#license)
+
+## Features
+
+| | |
+|---|---|
+| **Semantic search** | Nearest-neighbour passage retrieval with relevance scores and caller-controlled `top_k`. |
+| **Knowledge bases + access control** | Per-KB (or per-document) permissions resolved in SQL; Qdrant only ever sees the allowed filter. |
+| **Direct-to-storage uploads** | Browser uploads straight to MinIO via presigned URLs — file bytes never pass through the API. |
+| **OCR fallback** | Scanned / image-only pages are detected and run through Tesseract automatically. |
+| **Idempotent ingestion** | Deterministic point IDs + delete-then-write mean retries and re-ingests converge to exactly the right state. |
+| **Robust failures** | Bounded retries, a dead-letter queue for poison files, and per-document status in Postgres. |
+| **Self-healing uploads** | A periodic sweep recovers uploads that were stored but never confirmed. |
+| **Flow visualizer** | A built-in dev tool that animates real backend I/O across the architecture. |
 
 ## Architecture
 
-```
-browser ──metadata──► API (FastAPI, stateless, no model)
-browser ──bytes─────► MinIO            (presigned PUT; bytes skip the API)
-                       │
-   API ──enqueue──► Redis ──► Celery worker(s)
-                                  │ read PDF ◄── MinIO
-                                  │ extract (PyMuPDF + Tesseract OCR)
-                                  │ chunk → embed ──► TEI (the only model)
-                                  └ delete-then-write ──► Qdrant
-   API (search) ──► Postgres (resolve allowed KBs) ──► TEI (embed query)
-                ──► Qdrant (nearest neighbours WHERE kb_id ∈ allowed)
+Three data stores, each authoritative for one thing: **MinIO** holds the *files*,
+**Postgres** holds the *facts* about them (status, ownership, permissions), and **Qdrant**
+holds the searchable *chunks* (derived, rebuildable from MinIO).
+
+```mermaid
+flowchart LR
+    BR([Browser])
+    API[API · FastAPI<br/>stateless · no model]
+    PG[(Postgres<br/>facts)]
+    MO[(MinIO<br/>files)]
+    RD{{Redis<br/>queue}}
+    WK[Worker · Celery]
+    TEI[[TEI<br/>embeddings]]
+    QD[(Qdrant<br/>chunks)]
+
+    BR -->|1 · metadata only| API
+    API -->|2 · INSERT row| PG
+    API -->|3 · presigned URL| MO
+    BR -->|4 · PUT bytes direct| MO
+    BR -->|5 · complete| API
+    API -->|6 · enqueue| RD
+    RD --> WK
+    WK -->|read PDF| MO
+    WK -->|extract · chunk| WK
+    WK -->|embed| TEI
+    WK -->|delete-then-write| QD
+    WK -->|status| PG
+
+    BR -. search .-> API
+    API -. resolve allowed KBs .-> PG
+    API -. embed query .-> TEI
+    API -. nearest neighbours · filtered .-> QD
+
+    classDef store fill:#064e3b,stroke:#34d399,color:#ecfdf5;
+    classDef svc fill:#1e293b,stroke:#60a5fa,color:#eff6ff;
+    class PG,MO,QD store;
+    class API,WK,TEI svc;
 ```
 
-**Three stores, three jobs:** MinIO holds the *files*, Postgres holds the *facts*
-about them (status, ownership, permissions), Qdrant holds the searchable *chunks*
-(derived, rebuildable from MinIO).
+Both the API (one query vector) and the workers (bulk chunk vectors) call the **same**
+embedding service, so "query and ingestion must use the same model" is a structural
+guarantee — there is only one model, in one place.
 
-## Services (`docker-compose.yml`)
+### Services
 
 | Service | Role |
 | --- | --- |
-| `api` | FastAPI, stateless, no model. Runs migrations + Qdrant bootstrap on startup. |
-| `worker` | Celery: parse + chunk + embed + write. Scale with `--scale worker=N`. |
-| `beat` | Celery beat: abandoned-upload sweep. |
+| `api` | FastAPI, stateless, **no model**. Runs migrations + Qdrant bootstrap on startup. |
+| `worker` | Celery: parse → chunk → embed → write. Scale with `--scale worker=N`. |
+| `beat` | Celery beat: the abandoned-upload sweep. |
 | `tei` | Text Embeddings Inference serving `BAAI/bge-small-en-v1.5` (384-dim). |
-| `qdrant` | Vector store (single `chunks` collection, payload indexes on `doc_id`/`kb_id`). |
+| `qdrant` | Vector store — single `chunks` collection, payload indexes on `doc_id` / `kb_id`. |
 | `postgres` | System of record (documents, KBs, users/groups, permissions). |
 | `redis` | Celery broker + result backend. |
-| `minio` | S3-compatible object storage for raw PDF bytes (+ `minio-init` makes the bucket). |
+| `minio` | S3-compatible object storage for raw PDF bytes (+ `minio-init` creates the bucket). |
 
-## Run
+## Tech stack
+
+**Python 3.12** · **FastAPI** + Uvicorn · **Celery** + Redis · **SQLAlchemy 2.0** + Alembic ·
+**Qdrant** · **MinIO** (boto3) · **PyMuPDF** + Tesseract OCR · **tiktoken** ·
+Hugging Face **TEI** · all orchestrated with **Docker Compose**.
+
+## Quick start
 
 ```bash
-cp .env.example .env            # defaults match the compose service names
-docker compose up --build       # first boot downloads the TEI model (be patient)
+cp .env.example .env          # defaults already match the compose service names
+docker compose up --build     # first boot downloads the embedding model — give it a minute
 ```
 
-When `api` is up: open <http://localhost:8000/docs>. MinIO console:
-<http://localhost:9001> (minioadmin / minioadmin).
+Then:
 
-> **Apple Silicon (arm64):** the official TEI CPU image is amd64-only and is flaky
-> under emulation. `docker-compose.override.yml` (auto-loaded) swaps the `tei`
-> service for a small arm64-native sidecar (`embed_server/`, fastembed) serving the
-> **same model** behind the **same `/embed` contract**. For production / amd64, use
-> real TEI: `docker compose -f docker-compose.yml up` (ignores the override).
+- **Visualizer:** <http://localhost:8000/> &nbsp;·&nbsp; **API docs:** <http://localhost:8000/docs>
+- **MinIO console:** <http://localhost:9001> (`minioadmin` / `minioadmin`)
+
+> [!NOTE]
+> **Apple Silicon (arm64).** The official TEI CPU image is amd64-only and is flaky under
+> emulation. `docker-compose.override.yml` (auto-loaded) swaps the `tei` service for a small
+> arm64-native sidecar (`embed_server/`, fastembed) serving the **same model** behind the
+> **same `/embed` contract**. For production / amd64, run real TEI explicitly:
+> `docker compose -f docker-compose.yml up`.
 
 ## Developer flow visualizer
 
-A built-in dev tool (NOT the user-facing app) that animates the backend flow over an
-architecture diagram. Open <http://localhost:8000/> (redirects to `/ui/`). Click
-**Ingest a document** or **Search as Alice / Bob** and watch each hop light up — every
-action runs **real** backend I/O (Postgres rows, MinIO objects, TEI embeddings, Qdrant
-points) and the step timeline shows the actual data + per-step latency. Backed by the
-`/demo/*` endpoints in `api/routes/demo.py`. Use **Reset demo data** to wipe and start clean.
+A built-in tool — **not** the user-facing app — that animates how the backend actually
+works. Click a button and watch each hop light up across the diagram while a timeline logs
+the real data and per-step latency. Every action performs genuine backend I/O: real
+Postgres rows, real MinIO objects, real TEI embeddings, real Qdrant points.
 
-## End-to-end verification
+Open <http://localhost:8000/> and try **Ingest a document**, then **Search as Alice**
+(returns hits) vs **Search as Bob** (no access → the query short-circuits before Qdrant).
+Backed by `/demo/*` in [`api/routes/demo.py`](src/sherpa/api/routes/demo.py).
 
-```bash
-# 1. Health
-curl -s localhost:8000/healthz
+## API reference
 
-# 2. Seed a KB + users (alice has access, bob does not). Note the printed IDs.
-docker compose exec api python scripts/seed.py
-KB=<kb_id from output>
-ALICE=<alice user_id>
-BOB=<bob user_id>
+| Method | Endpoint | Description |
+| --- | --- | --- |
+| `POST` | `/documents` | Register a document, get a presigned upload URL. |
+| `POST` | `/documents/{id}/complete` | Confirm the upload, enqueue ingestion. |
+| `GET` | `/documents/{id}` | Document status (the source of truth for "is it searchable?"). |
+| `POST` | `/search` | Semantic search → ranked `{doc_id, filename, page, snippet, score}`. |
+| `GET` | `/healthz` | Liveness probe. |
+| `GET` | `/docs` | Interactive OpenAPI docs. |
+| `*` | `/demo/*` | Visualizer backend (state · ingest · search · reset). |
 
-# 3. Register a document -> get a presigned upload URL.
-RESP=$(curl -s -X POST localhost:8000/documents \
-  -H "X-User-Id: $ALICE" -H 'Content-Type: application/json' \
-  -d "{\"filename\":\"sample.pdf\",\"size\":12345,\"kb_ids\":[\"$KB\"]}")
-echo "$RESP"
-DOC=$(echo "$RESP" | python3 -c 'import sys,json;print(json.load(sys.stdin)["doc_id"])')
-URL=$(echo "$RESP" | python3 -c 'import sys,json;print(json.load(sys.stdin)["upload_url"])')
+> Authentication in this skeleton is a dev `X-User-Id` header. Real auth (sessions / JWT)
+> swaps a single function — [`api/deps.py:current_user`](src/sherpa/api/deps.py).
 
-# 4. Upload the bytes straight to MinIO (must match Content-Type).
-curl -s -X PUT --upload-file sample.pdf -H 'Content-Type: application/pdf' "$URL"
+## How it works
 
-# 5. Confirm completion -> enqueues ingestion.
-curl -s -X POST "localhost:8000/documents/$DOC/complete" -H "X-User-Id: $ALICE"
+**Ingestion** (offline, per document, runs in a worker):
 
-# 6. Poll until status=done.
-curl -s "localhost:8000/documents/$DOC" -H "X-User-Id: $ALICE"
+1. Read the PDF from MinIO.
+2. Extract text with PyMuPDF; OCR any page with no text layer via Tesseract.
+3. Split into overlapping ~450-token chunks, keeping the source page on each.
+4. Embed every chunk through TEI.
+5. **Delete-by-`doc_id`, then upsert** points with deterministic IDs → idempotent.
+6. Drive Postgres status `queued → processing → done` (or `failed` → dead-letter).
 
-# 7. Search as alice (sees results) ...
-curl -s -X POST localhost:8000/search -H "X-User-Id: $ALICE" \
-  -H 'Content-Type: application/json' \
-  -d '{"query":"your question here","top_k":5}'
+**Query** (per request, stateless):
 
-# 8. ... and as bob (no access -> empty hits, proving the access filter).
-curl -s -X POST localhost:8000/search -H "X-User-Id: $BOB" \
-  -H 'Content-Type: application/json' -d '{"query":"your question here"}'
+1. Resolve which knowledge bases the user may see (Postgres).
+2. Embed the question with the **same** model used at ingestion.
+3. Ask Qdrant for nearest neighbours **where `kb_id ∈ allowed`**.
+4. Return the ranked passages with scores.
+
+## Data model
+
+```
+documents ──< document_kb >── knowledge_bases
+   │                                  │
+ status, page_count,            kb_access ──> users / groups
+ object_key, error
 ```
 
-**Other checks**
+- **`documents`** — one row per PDF: `doc_id`, `object_key`, `status`, `page_count`, timestamps.
+- **`knowledge_bases`** + **`document_kb`** — many-to-many membership (`kb_id` is a list by design).
+- **`users` / `groups` / `user_groups`** + **`kb_access`** — the permission source of truth.
 
-- **Idempotency:** re-run ingestion for the same doc and confirm the point count is
-  unchanged: `docker compose exec api python -c "from sherpa.clients.qdrant import count_document; print(count_document('$DOC'))"`.
-- **Failure path:** upload a non-PDF / password-protected file; the document lands in
-  `status=failed` with a reason and a message on the `dead_letter` queue.
-- **OCR:** upload a scanned (image-only) PDF and confirm it still produces chunks.
-- **Persistence:** `docker compose restart qdrant postgres` and confirm data survives.
+Every Qdrant point carries `{ doc_id, kb_id[], filename, page, snippet }`, with payload
+indexes on the two filtered fields (`doc_id`, `kb_id`).
 
-## Offline smoke test (no services)
+## Project structure
+
+```
+sherpa/
+├── docker-compose.yml            # 7 services + minio-init
+├── docker-compose.override.yml   # arm64-native embedding sidecar (dev)
+├── docker/                       # api + worker Dockerfiles
+├── migrations/                   # Alembic (0001_init)
+├── embed_server/                 # local TEI-compatible sidecar (fastembed)
+├── scripts/                      # bootstrap_qdrant · seed · smoke_test
+└── src/sherpa/
+    ├── config.py                 # all settings (pydantic-settings)
+    ├── schemas.py                # request/response models
+    ├── db/                       # SQLAlchemy models + session
+    ├── clients/                  # tei · qdrant · storage (MinIO)
+    ├── ingestion/                # extract (+OCR) · chunk · pipeline
+    ├── worker/                   # celery app + tasks (ingest, sweep, dead-letter)
+    └── api/                      # FastAPI app, routes, static visualizer
+```
+
+## Configuration
+
+All settings live in [`src/sherpa/config.py`](src/sherpa/config.py) and are overridable via
+`.env`. The ones that matter most:
+
+| Variable | Purpose |
+| --- | --- |
+| `EMBED_DIM` | Must equal the TEI model's output dimension (384 for bge-small). |
+| `CHUNK_TOKENS` / `CHUNK_OVERLAP_TOKENS` | The main retrieval-quality knob. |
+| `MAX_INGEST_RETRIES` | Transient-failure retry cap before dead-letter. |
+| `MINIO_PUBLIC_ENDPOINT` | Host-reachable endpoint baked into presigned upload URLs. |
+| `ABANDONED_AFTER_S` / `SWEEP_INTERVAL_S` | Abandoned-upload sweep timing. |
+
+## Testing & verification
+
+**Offline smoke test** (no services needed):
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e .
 .venv/bin/python scripts/smoke_test.py
 ```
 
-## Configuration
+**End-to-end** (stack up):
 
-All knobs live in `sherpa/config.py` and are overridable via env (`.env`). The
-important ones: `EMBED_DIM` (must equal the TEI model's output dim),
-`CHUNK_TOKENS` / `CHUNK_OVERLAP_TOKENS` (the main quality knob), `MAX_INGEST_RETRIES`,
-and the MinIO public endpoint used for presigned URLs.
+```bash
+# Seed a KB + users (alice has access, bob does not)
+docker compose exec api python scripts/seed.py
 
-## Notes / deferred (by design)
+# Health check
+curl -s localhost:8000/healthz
+```
 
-- **Auth** is a dev `X-User-Id` header; real auth swaps `api/deps.py:current_user` only.
-- **Trigger** is browser-confirmation + an abandoned-upload sweep; MinIO bucket
-  notifications are the event-driven upgrade if orphans become a problem.
-- **Scale** levers (GPU on TEI, more workers, API replicas, Qdrant sharding) don't
-  touch the payload shape or pipeline.
-- **No frontend** — the `/search` endpoint is the retrieval backend a UI or future
-  "summarize results" agent consumes.
+Then drive the upload → ingest → search flow from the [visualizer](#developer-flow-visualizer),
+or via `curl` against the [API](#api-reference). Worth confirming:
+
+- **Idempotency** — re-ingest a doc; the Qdrant point count is unchanged.
+- **Failure path** — upload a non-PDF; it lands in `status=failed` + on the `dead_letter` queue.
+- **OCR** — a scanned, image-only PDF still produces chunks.
+- **Access control** — Bob (no `kb_access`) gets zero hits; Qdrant is never queried.
+- **Persistence** — `docker compose restart qdrant postgres`; data survives.
+
+## Design decisions
+
+Deliberate, single-seam simplifications — none require reworking the payload or pipeline to lift later:
+
+- **Auth** is a dev header today; real auth replaces one function.
+- **Ingest trigger** is browser-confirmation + the sweep; MinIO bucket notifications are the event-driven upgrade.
+- **Scale levers** (GPU on TEI, more workers, API replicas, Qdrant sharding) are independent of the data model.
+- **No generation step.** `/search` is clean structured JSON — the correct retrieval backend for a future agent or "summarize results" feature, kept on your own infrastructure.
+
+## License
+
+Released under the [MIT License](LICENSE).
