@@ -55,6 +55,15 @@ When `api` is up: open <http://localhost:8000/docs>. MinIO console:
 > **same model** behind the **same `/embed` contract**. For production / amd64, use
 > real TEI: `docker compose -f docker-compose.yml up` (ignores the override).
 
+## Developer flow visualizer
+
+A built-in dev tool (NOT the user-facing app) that animates the backend flow over an
+architecture diagram. Open <http://localhost:8000/> (redirects to `/ui/`). Click
+**Ingest a document** or **Search as Alice / Bob** and watch each hop light up — every
+action runs **real** backend I/O (Postgres rows, MinIO objects, TEI embeddings, Qdrant
+points) and the step timeline shows the actual data + per-step latency. Backed by the
+`/demo/*` endpoints in `api/routes/demo.py`. Use **Reset demo data** to wipe and start clean.
+
 ## End-to-end verification
 
 ```bash

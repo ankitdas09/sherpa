@@ -30,3 +30,4 @@ data/
 
 # Local test artifacts
 *.pdf
+.gstack/

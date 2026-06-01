@@ -1,0 +1,424 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Sherpa — Backend Flow Visualizer</title>
+<style>
+  :root {
+    --bg: #0b0f17; --panel: #131a26; --panel2: #0f1622; --line: #243140;
+    --ink: #e6edf6; --dim: #8b9bb0; --faint: #3a4860;
+    --client: #94a3b8; --api: #4f9cf9; --worker: #a78bfa; --model: #2dd4bf;
+    --store: #34d399; --queue: #fb923c; --accent: #4f9cf9;
+    --request:#4f9cf9; --response:#60a5fa; --db:#34d399; --store-k:#fbbf24;
+    --queue-k:#fb923c; --model-k:#2dd4bf; --compute-k:#a78bfa;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  }
+  header {
+    padding: 14px 20px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+  }
+  header h1 { font-size: 16px; margin: 0; letter-spacing: .2px; }
+  header .tag {
+    font-size: 11px; color: var(--dim); border: 1px solid var(--line);
+    padding: 2px 8px; border-radius: 999px;
+  }
+  header .spacer { flex: 1; }
+  .layout { display: grid; grid-template-columns: 1fr 360px; gap: 16px; padding: 16px; }
+  @media (max-width: 1100px) { .layout { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    overflow: hidden;
+  }
+  .card h2 {
+    font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim);
+    margin: 0; padding: 10px 14px; border-bottom: 1px solid var(--line); background: var(--panel2);
+  }
+  .card .body { padding: 12px 14px; }
+
+  /* diagram */
+  #diagram { width: 100%; height: auto; display: block; background:
+    radial-gradient(1200px 500px at 50% -10%, #16202e 0%, transparent 60%); }
+  .node rect {
+    fill: var(--panel2); stroke: var(--faint); stroke-width: 1.5; rx: 12;
+    transition: stroke .2s, filter .2s;
+  }
+  .node .title { fill: var(--ink); font-size: 14px; font-weight: 600; }
+  .node .sub { fill: var(--dim); font-size: 10.5px; }
+  .node .dot { opacity: .9; }
+  .node.active rect { stroke-width: 2.5; filter: drop-shadow(0 0 10px currentColor); }
+  .node.active .title { fill: #fff; }
+  .n-client { color: var(--client); } .n-api { color: var(--api); }
+  .n-worker { color: var(--worker); } .n-model { color: var(--model); }
+  .n-store { color: var(--store); } .n-queue { color: var(--queue); }
+  .node.active rect { stroke: currentColor; }
+  .edge { stroke: var(--faint); stroke-width: 1.4; opacity: .35; }
+  .edge.live { stroke-width: 3; opacity: 1; }
+  .travel { fill: #fff; }
+  .step-label {
+    fill: var(--ink); font-size: 11px; font-weight: 600;
+  }
+
+  /* timeline */
+  #log { max-height: 300px; overflow-y: auto; }
+  .step {
+    border-left: 3px solid var(--faint); padding: 7px 10px; margin: 0 0 6px 0;
+    background: var(--panel2); border-radius: 0 8px 8px 0; cursor: default;
+    opacity: .35; transition: opacity .2s;
+  }
+  .step.shown { opacity: 1; }
+  .step .row { display: flex; align-items: center; gap: 8px; }
+  .step .ttl { font-weight: 600; flex: 1; }
+  .step .route { font-size: 11px; color: var(--dim); font-family: ui-monospace, monospace; }
+  .step .ms { font-size: 11px; color: var(--model); font-family: ui-monospace, monospace; }
+  .step pre {
+    margin: 6px 0 0; font-size: 11.5px; color: var(--dim);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap;
+    word-break: break-word; max-height: 0; overflow: hidden; transition: max-height .2s;
+  }
+  .step.open pre { max-height: 320px; }
+  .k-request{border-color:var(--request)} .k-response{border-color:var(--response)}
+  .k-db{border-color:var(--db)} .k-store{border-color:var(--store-k)}
+  .k-queue{border-color:var(--queue-k)} .k-model{border-color:var(--model-k)}
+  .k-compute{border-color:var(--compute-k)} .k-info{border-color:var(--faint)}
+
+  /* controls */
+  label.fld { display: block; font-size: 11px; color: var(--dim); margin: 10px 0 4px; }
+  textarea, input[type=text] {
+    width: 100%; background: var(--panel2); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 8px; padding: 8px 10px; font: inherit; resize: vertical;
+  }
+  textarea { min-height: 84px; font-size: 12.5px; }
+  .btns { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  button {
+    background: var(--accent); color: #04122b; border: 0; border-radius: 8px;
+    padding: 8px 12px; font-weight: 600; cursor: pointer; font-size: 13px;
+  }
+  button.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+  button.warn { background: #f87171; color: #2a0707; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .row2 { display: flex; gap: 8px; align-items: center; }
+
+  /* stats */
+  .stat { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px dashed var(--line); }
+  .stat:last-child { border-bottom: 0; }
+  .stat .v { font-family: ui-monospace, monospace; color: var(--ink); }
+  .pill { font-size: 10.5px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--dim); }
+
+  /* results */
+  .hit { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; }
+  .hit .meta { display: flex; gap: 10px; font-size: 11px; color: var(--dim); font-family: ui-monospace, monospace; }
+  .hit .score { color: var(--model); }
+  .hit .snip { margin-top: 4px; font-size: 12.5px; color: var(--ink); }
+  .empty { color: var(--queue); font-size: 13px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 8px 14px; font-size: 11px; color: var(--dim); }
+  .legend b { color: var(--ink); font-weight: 600; }
+  .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 3px; vertical-align: middle; margin-right: 5px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🧭 Sherpa — Backend Flow Visualizer</h1>
+  <span class="tag">developer tool · not the user-facing app</span>
+  <div class="spacer"></div>
+  <span class="tag" id="conn">connecting…</span>
+</header>
+
+<div class="layout">
+  <!-- left: diagram + timeline -->
+  <div style="display:flex; flex-direction:column; gap:16px;">
+    <div class="card">
+      <h2>Architecture &amp; live data flow</h2>
+      <svg id="diagram" viewBox="0 0 970 520" role="img"></svg>
+      <div class="body legend">
+        <span><span class="swatch" style="background:var(--store)"></span><b>MinIO</b> files · <b>Postgres</b> facts · <b>Qdrant</b> chunks</span>
+        <span><span class="swatch" style="background:var(--queue)"></span>Redis queue</span>
+        <span><span class="swatch" style="background:var(--model)"></span>TEI model</span>
+        <span><span class="swatch" style="background:var(--api)"></span>API</span>
+        <span><span class="swatch" style="background:var(--worker)"></span>Worker</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Step timeline <span id="flowname" class="pill" style="float:right"></span></h2>
+      <div class="body"><div id="log"></div></div>
+    </div>
+
+    <div class="card" id="resultsCard" style="display:none">
+      <h2 id="resultsTitle">Results</h2>
+      <div class="body"><div id="results"></div></div>
+    </div>
+  </div>
+
+  <!-- right: controls + state -->
+  <div style="display:flex; flex-direction:column; gap:16px;">
+    <div class="card">
+      <h2>1 · Ingest a document</h2>
+      <div class="body">
+        <label class="fld">Document text (becomes a PDF, then ingested for real)</label>
+        <textarea id="ingestText">Coral reefs are among the most biodiverse ecosystems on the planet.
+They are built by colonies of tiny animals called polyps that secrete
+calcium carbonate skeletons. Rising ocean temperatures cause the symbiotic
+algae to be expelled, a process known as coral bleaching that can lead to
+widespread reef death if the heat stress is prolonged.</textarea>
+        <div class="btns">
+          <button id="btnIngest">▶ Ingest document</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>2 · Run a search</h2>
+      <div class="body">
+        <label class="fld">Query (semantic — wording need not match the document)</label>
+        <input type="text" id="searchQ" value="what makes corals turn white?" />
+        <div class="btns">
+          <button id="btnAlice">▶ Search as Alice <span class="pill">has access</span></button>
+          <button id="btnBob" class="ghost">▶ Search as Bob <span class="pill">no access</span></button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>System state</h2>
+      <div class="body" id="stateBody">
+        <div class="stat"><span>Documents</span><span class="v" id="sDocs">–</span></div>
+        <div class="stat"><span>By status</span><span class="v" id="sStatus">–</span></div>
+        <div class="stat"><span>Qdrant points</span><span class="v" id="sPoints">–</span></div>
+        <div class="stat"><span>Vector dim</span><span class="v" id="sDim">–</span></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Utilities</h2>
+      <div class="body">
+        <div class="row2">
+          <span class="pill">speed</span>
+          <input type="range" id="speed" min="0.4" max="2.5" step="0.1" value="1" style="flex:1" />
+          <span class="v" id="speedV" style="font-family:ui-monospace,monospace">1.0×</span>
+        </div>
+        <div class="btns">
+          <button class="ghost" id="btnClear">Clear log</button>
+          <button class="warn" id="btnReset">Reset demo data</button>
+        </div>
+        <p style="color:var(--dim); font-size:11px; margin:10px 0 0">
+          Every action performs <b>real</b> backend I/O. The demo runs worker steps
+          inline so it can narrate each stage; in production they run in a separate
+          Celery worker pulled off Redis.
+        </p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const NODES = {
+  browser: {x:80,  y:250, label:'Browser', sub:'client',          cls:'n-client'},
+  api:     {x:300, y:250, label:'API',     sub:'FastAPI · stateless', cls:'n-api'},
+  postgres:{x:300, y:72,  label:'Postgres',sub:'system of record', cls:'n-store'},
+  minio:   {x:300, y:448, label:'MinIO',   sub:'PDF bytes',        cls:'n-store'},
+  redis:   {x:510, y:250, label:'Redis',   sub:'queue broker',     cls:'n-queue'},
+  worker:  {x:710, y:250, label:'Worker',  sub:'Celery · ingest',  cls:'n-worker'},
+  tei:     {x:710, y:448, label:'TEI',     sub:'embeddings',       cls:'n-model'},
+  qdrant:  {x:888, y:250, label:'Qdrant',  sub:'vectors',          cls:'n-store'},
+};
+const EDGES = [
+  ['browser','api'],['api','postgres'],['api','minio'],['browser','minio'],
+  ['api','redis'],['redis','worker'],['worker','postgres'],['worker','minio'],
+  ['worker','tei'],['worker','qdrant'],['api','tei'],['api','qdrant'],
+];
+const KIND_COLOR = {
+  request:'var(--request)', response:'var(--response)', db:'var(--db)',
+  store:'var(--store-k)', queue:'var(--queue-k)', model:'var(--model-k)',
+  compute:'var(--compute-k)', info:'var(--faint)',
+};
+const W=120, H=56;
+const SVGNS='http://www.w3.org/2000/svg';
+const svg = document.getElementById('diagram');
+const el = (id)=>document.getElementById(id);
+const sleep = (ms)=>new Promise(r=>setTimeout(r,ms));
+let speed = 1; let busy = false;
+
+function edgeKey(a,b){ return [a,b].sort().join('~'); }
+const edgeEls = {};
+
+function drawDiagram(){
+  // base edges
+  for(const [a,b] of EDGES){
+    const na=NODES[a], nb=NODES[b];
+    const ln=document.createElementNS(SVGNS,'line');
+    ln.setAttribute('x1',na.x); ln.setAttribute('y1',na.y);
+    ln.setAttribute('x2',nb.x); ln.setAttribute('y2',nb.y);
+    ln.setAttribute('class','edge');
+    svg.appendChild(ln); edgeEls[edgeKey(a,b)] = ln;
+  }
+  // nodes
+  for(const [id,n] of Object.entries(NODES)){
+    const g=document.createElementNS(SVGNS,'g');
+    g.setAttribute('class',`node ${n.cls}`); g.setAttribute('id',`node-${id}`);
+    g.setAttribute('transform',`translate(${n.x-W/2},${n.y-H/2})`);
+    const r=document.createElementNS(SVGNS,'rect');
+    r.setAttribute('width',W); r.setAttribute('height',H); r.setAttribute('rx',12);
+    const d=document.createElementNS(SVGNS,'circle');
+    d.setAttribute('cx',14); d.setAttribute('cy',14); d.setAttribute('r',4);
+    d.setAttribute('class','dot'); d.setAttribute('fill','currentColor');
+    const t=document.createElementNS(SVGNS,'text');
+    t.setAttribute('class','title'); t.setAttribute('x',W/2); t.setAttribute('y',26);
+    t.setAttribute('text-anchor','middle'); t.textContent=n.label;
+    const s=document.createElementNS(SVGNS,'text');
+    s.setAttribute('class','sub'); s.setAttribute('x',W/2); s.setAttribute('y',42);
+    s.setAttribute('text-anchor','middle'); s.textContent=n.sub;
+    g.append(r,d,t,s); svg.appendChild(g);
+  }
+  // moving dot (on top)
+  const dot=document.createElementNS(SVGNS,'circle');
+  dot.setAttribute('id','travel'); dot.setAttribute('r',6); dot.setAttribute('class','travel');
+  dot.setAttribute('opacity','0'); svg.appendChild(dot);
+}
+
+function setActive(id,on){ el(`node-${id}`)?.classList.toggle('active',on); }
+
+async function animateStep(step){
+  const {from,to,kind} = step;
+  const color = KIND_COLOR[kind] || 'var(--accent)';
+  setActive(from,true); setActive(to,true);
+  const dur = 620/speed;
+
+  if(from!==to){
+    const ln = edgeEls[edgeKey(from,to)];
+    if(ln){ ln.classList.add('live'); ln.style.stroke=color; }
+    const a=NODES[from], b=NODES[to];
+    const dot=el('travel'); dot.setAttribute('fill',color); dot.setAttribute('opacity','1');
+    const t0=performance.now();
+    await new Promise(res=>{
+      function frame(now){
+        const k=Math.min(1,(now-t0)/dur);
+        dot.setAttribute('cx', a.x+(b.x-a.x)*k);
+        dot.setAttribute('cy', a.y+(b.y-a.y)*k);
+        if(k<1) requestAnimationFrame(frame); else res();
+      }
+      requestAnimationFrame(frame);
+    });
+    dot.setAttribute('opacity','0');
+    if(ln){ setTimeout(()=>{ ln.classList.remove('live'); ln.style.stroke=''; }, 260/speed); }
+  } else {
+    await sleep(dur*0.7); // self-step: just dwell on the node
+  }
+  setActive(from,false); setActive(to,false);
+}
+
+function logStep(step,i){
+  const div=document.createElement('div');
+  div.className=`step k-${step.kind}`;
+  const ms = step.ms!=null ? `<span class="ms">${step.ms} ms</span>` : '';
+  const detail = (step.detail && Object.keys(step.detail).length)
+    ? `<pre>${escapeHtml(JSON.stringify(step.detail,null,2))}</pre>` : '';
+  div.innerHTML = `<div class="row">
+      <span class="ttl">${escapeHtml(step.title)}</span>${ms}
+    </div>
+    <div class="route">${step.from} → ${step.to}</div>${detail}`;
+  div.addEventListener('click',()=>div.classList.toggle('open'));
+  el('log').appendChild(div);
+  return div;
+}
+
+function escapeHtml(s){ return s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+async function playFlow(name, steps){
+  el('flowname').textContent = name;
+  for(let i=0;i<steps.length;i++){
+    const div = logStep(steps[i],i);
+    requestAnimationFrame(()=>div.classList.add('shown'));
+    div.scrollIntoView({block:'nearest',behavior:'smooth'});
+    await animateStep(steps[i]);
+    await sleep(150/speed);
+  }
+}
+
+function setBusy(b){
+  busy=b;
+  ['btnIngest','btnAlice','btnBob','btnReset','btnClear'].forEach(id=>el(id).disabled=b);
+}
+
+async function api(path, body){
+  const r = await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(body||{})});
+  if(!r.ok) throw new Error(`${path} → ${r.status}`);
+  return r.json();
+}
+
+async function refreshState(){
+  try{
+    const s = await fetch('/demo/state').then(r=>r.json());
+    el('conn').textContent = 'connected';
+    el('sDocs').textContent = s.documents_total;
+    el('sStatus').textContent = Object.entries(s.documents_by_status||{})
+        .map(([k,v])=>`${k}:${v}`).join('  ') || '—';
+    el('sPoints').textContent = s.qdrant_points ?? '—';
+    el('sDim').textContent = s.embed_dim;
+  }catch(e){ el('conn').textContent='backend unreachable'; }
+}
+
+function showResults(title, html){
+  el('resultsCard').style.display='';
+  el('resultsTitle').textContent = title;
+  el('results').innerHTML = html;
+}
+
+// ---- actions ----
+el('btnIngest').onclick = async ()=>{
+  if(busy) return; setBusy(true); el('log').innerHTML='';
+  try{
+    const res = await api('/demo/ingest', {text: el('ingestText').value});
+    await playFlow('ingest', res.steps);
+    showResults('Ingest complete', `<div class="hit">
+      <div class="meta"><span>doc_id ${res.doc_id}</span></div>
+      <div class="snip">✅ ${res.pages} page(s) → <b>${res.chunks} chunk(s)</b> embedded and written to Qdrant.</div></div>`);
+    await refreshState();
+  }catch(e){ alert(e.message); } finally{ setBusy(false); }
+};
+
+async function doSearch(who){
+  if(busy) return; setBusy(true); el('log').innerHTML='';
+  try{
+    const res = await api('/demo/search', {query: el('searchQ').value, as_user: who});
+    await playFlow(`search · ${who}`, res.steps);
+    if(!res.hits.length){
+      showResults(`Results · ${who}`, `<p class="empty">No results — ${who==='bob'
+        ? 'Bob has no access to this knowledge base, so Qdrant was never queried.'
+        : 'nothing matched (try ingesting a document first).'}</p>`);
+    } else {
+      showResults(`Results · ${who}`, res.hits.map(h=>`<div class="hit">
+        <div class="meta"><span class="score">score ${h.score}</span>
+          <span>page ${h.page}</span><span>${escapeHtml(h.filename)}</span></div>
+        <div class="snip">${escapeHtml(h.snippet)}…</div></div>`).join(''));
+    }
+    await refreshState();
+  }catch(e){ alert(e.message); } finally{ setBusy(false); }
+}
+el('btnAlice').onclick = ()=>doSearch('alice');
+el('btnBob').onclick   = ()=>doSearch('bob');
+
+el('btnReset').onclick = async ()=>{
+  if(busy) return;
+  if(!confirm('Delete all demo documents (Postgres rows, MinIO objects, Qdrant points)?')) return;
+  setBusy(true);
+  try{ const r=await api('/demo/reset'); el('log').innerHTML='';
+    el('resultsCard').style.display='none';
+    showResults('Reset', `<p>Removed ${r.deleted_documents} document(s), ${r.deleted_objects} object(s); Qdrant collection recreated.</p>`);
+    await refreshState();
+  }catch(e){ alert(e.message); } finally{ setBusy(false); }
+};
+el('btnClear').onclick = ()=>{ el('log').innerHTML=''; el('flowname').textContent=''; };
+el('speed').oninput = (e)=>{ speed=parseFloat(e.target.value); el('speedV').textContent=speed.toFixed(1)+'×'; };
+
+drawDiagram();
+refreshState();
+</script>
+</body>
+</html>

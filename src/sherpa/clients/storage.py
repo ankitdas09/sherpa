@@ -73,3 +73,25 @@ def ensure_bucket() -> None:
         client.head_bucket(Bucket=settings.minio_bucket)
     except ClientError:
         client.create_bucket(Bucket=settings.minio_bucket)
+
+
+def put_bytes(key: str, data: bytes, content_type: str = "application/pdf") -> None:
+    """Write bytes via the internal endpoint.
+
+    Used by the /demo visualizer to stand in for the browser's direct presigned
+    PUT (the presigned URL targets the *public* endpoint, unreachable from inside
+    the docker network).
+    """
+    _client().put_object(
+        Bucket=settings.minio_bucket, Key=key, Body=data, ContentType=content_type
+    )
+
+
+def clear_uploads() -> int:
+    """Delete every object under the bucket. Returns the count removed (demo reset)."""
+    client = _client()
+    resp = client.list_objects_v2(Bucket=settings.minio_bucket)
+    objs = [{"Key": o["Key"]} for o in resp.get("Contents", [])]
+    if objs:
+        client.delete_objects(Bucket=settings.minio_bucket, Delete={"Objects": objs})
+    return len(objs)

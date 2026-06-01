@@ -14,9 +14,13 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
-from sherpa.api.routes import documents, health, search
+from sherpa.api.routes import demo, documents, health, search
 from sherpa.clients.qdrant import ensure_collection
+
+_STATIC_DIR = Path(__file__).parent / "static"
 
 log = logging.getLogger("sherpa.api")
 
@@ -54,3 +58,13 @@ app = FastAPI(
 app.include_router(health.router)
 app.include_router(documents.router)
 app.include_router(search.router)
+app.include_router(demo.router)
+
+
+@app.get("/", include_in_schema=False)
+def root() -> RedirectResponse:
+    return RedirectResponse(url="/ui/")
+
+
+# Developer flow visualizer (served same-origin so it can call /demo/* directly).
+app.mount("/ui", StaticFiles(directory=_STATIC_DIR, html=True), name="ui")
